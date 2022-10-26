@@ -5,12 +5,13 @@ from backtrader.utils import num2date, date2num
 import datetime
 import numpy as np
 
-class BTgym(bt.Cerebro,gym.Env):
+class BTEngine(bt.Cerebro):
+    
     params = (
         ('preload', False),
         ('runonce', False),
         ('maxcpus', None),
-        ('stdstats', True),
+        ('stdstats', False),
         ('oldbuysell', False),
         ('oldtrades', False),
         ('lookahead', 0),
@@ -28,16 +29,99 @@ class BTgym(bt.Cerebro,gym.Env):
         ('quicknotify', False),
     )
 
-    def __init__(self,lookback = 5,only_close=True):
+    def __init__(self,lookback,state_rows = ("close",),action_mapping = None):
         super().__init__()
 
-        x = 1 if only_close else 5 
-        self.observation_space = spaces.Box(0, 1000000, shape=(x,lookback), dtype=float)
-        # We have 4 actions, corresponding to "right", "up", "left", "down"
-        self.action_space = spaces.Discrete(3)
+        assert type(state_rows) == tuple
 
+        self.state_shape = (len(state_rows),lookback)
         self.lookback = lookback
-        self.only_close = only_close
+
+        self.state_rows = state_rows
+
+        if action_mapping:
+            self.actions_mapping = action_mapping
+        else:
+            self.actions_mapping = {"buy" : 2, "sell" : 0, "hold":1}
+
+        self.possible_actions = [self.actions_mapping[key] for key in self.actions_mapping]
+
+    ## ==============================
+    ## Default Interface Methods
+    ## ==============================
+
+    def step(self,action = None):
+        # gym environment step function
+        if action is None:
+            action = self.actions_mapping["hold"]
+
+        assert action in self.possible_actions
+
+        observation = None
+        reward = 0
+        #print(self.strats[0][0][0])
+        # self.strats[0][0][0]._setAction(action = action)
+
+        for strat in self.runstrats_container:
+            strat._setAction(action)
+
+        self.terminated = self._step(self.runstrats_container,**self.bt_state_container) 
+        self.step_count += 1
+
+        observation = self._get_observations()
+
+        for strat in self.runstrats_container:
+            reward = strat._computeReward()        
+
+        return observation, reward, self.terminated
+  
+    def reset(self,**kwargs):
+        self.step_count = 0
+        self.terminated = False
+        self.run(**kwargs)
+
+        assert len(self.runstrats_container) == 1
+        self.runstrats_container[0]._set_action_mapping(self.actions_mapping)
+
+        observation = None
+
+        # TODO fix starting period
+        # kinda hacky skipping the first lookback
+        for _ in range(self.lookback):
+            observation = self.step()[0]
+            if len(self.state_rows) == 1:
+                if self.lookback == len(observation):
+                    break
+            else:
+                if self.lookback == observation.shape[1]:
+                    break
+
+        return observation        
+
+    def close(self):
+        # Last notification chance before stopping
+        self._datanotify()
+        if self._event_stop:  # stop if requested
+            return
+        self._storenotify()
+        if self._event_stop:  # stop if requested
+            return
+
+    ## ==============================
+    ## Cerebro Dissection Methods
+    ## ==============================
+
+    # Makes Cerebro Stapable in Backtests (not in live moe yet)
+    # Disects the _runnext method into a stepable function
+    # the reset method has to call the cerebro run method
+
+    def _runnext(self, runstrats):
+        '''
+        Actual implementation of run in full next mode. All objects have its
+        ``next`` method invoke on each data arrival
+        '''
+        self.runstrats_container = runstrats
+        self._init_run()
 
     def _init_run(self):
         datas = sorted(self.datas,
@@ -55,8 +139,6 @@ class BTgym(bt.Cerebro,gym.Env):
         ldatas_noclones = ldatas - clonecount
         dt0 = date2num(datetime.datetime.max) - 2  # default at max
 
-
-
         self.bt_state_container = { "datas" : datas,
                                     "datas1" : datas1,
                                     "data0" : data0,
@@ -67,79 +149,6 @@ class BTgym(bt.Cerebro,gym.Env):
                                     "ldatas_noclones" : ldatas_noclones,
                                     "dt0" : dt0,
                                     }
-
-    def reset(self,seed=None,**kwargs):
-        self.step_count = 0
-        self.terminated = False
-        self.run(**kwargs)
-
-        observation = None
-        info = {}
-
-        # TODO fix starting period
-        # kinda hacky skipping the first lookback
-        for _ in range(self.lookback):
-            observation = self.step()[0]
-            if self.lookback == observation.shape[1]:
-                break
-
-        return observation, info
-
-    def _runnext(self, runstrats):
-        '''
-        Actual implementation of run in full next mode. All objects have its
-        ``next`` method invoke on each data arrival
-        '''
-        self.runstrats_container = runstrats
-        self._init_run()
-
-    def step_all(self):
-
-        d0ret = self.bt_state_container["d0ret"]
-
-        # self.complete_run(self.runstrats_container,**self.bt_state_container)
-        for i in range(4000):
-            ended = self._step(self.runstrats_container,**self.bt_state_container)
-            if ended:
-                break
-
-    def step(self,action = 1):
-        # gym environment step function
-        observation = None
-        reward = None
-        info = {}
-        #print(self.strats[0][0][0])
-        # self.strats[0][0][0]._setAction(action = action)
-
-        for strat in self.runstrats_container:
-            strat._setAction(action)
-
-        self.terminated = self._step(self.runstrats_container,**self.bt_state_container) 
-        self.step_count += 1
-
-        observation = self._get_observations()
-
-        return observation, reward, self.terminated, False, info
-
-    def _get_observations(self):
-        if self.only_close:
-            return np.array(list(self.bt_state_container["data0"].close.get(size=self.lookback,ago=0)))
-        else:
-            return np.array([list(self.bt_state_container["data0"].close.get(size=self.lookback,ago=0)),
-                             list(self.bt_state_container["data0"].open.get(size=self.lookback,ago=0)),
-                             list(self.bt_state_container["data0"].high.get(size=self.lookback,ago=0)),
-                             list(self.bt_state_container["data0"].low.get(size=self.lookback,ago=0)),
-                             list(self.bt_state_container["data0"].volume.get(size=self.lookback,ago=0))])
-
-
-    def close(self):
-        # Last notification chance before stopping
-        self._datanotify()
-        if self._event_stop:  # stop if requested
-            return
-        self._storenotify()
-        if self._event_stop:  # stop if requested
-            return
 
     def _step(self,runstrats,datas,datas1,data0,d0ret,rsonly,
               onlyresample,noresample,ldatas_noclones,dt0):
@@ -273,11 +282,18 @@ class BTgym(bt.Cerebro,gym.Env):
                                 "ldatas_noclones" : ldatas_noclones,
                                 "dt0" : dt0,
                                 }
+        
         return False
 
-    # TODO check if episode is finished or make partial plotting available
-    # def plot(self,**kwargs):
-    #     if self.terminated:
-    #         self.plot()
-    #     else:
-    #         return "finish episode first"
+    def _get_observations(self):
+        
+        if len(self.state_rows) == 1:
+            line =  getattr(self.bt_state_container["data0"],self.state_rows[0])
+            return np.array(list(line.get(size=self.lookback,ago=0)))
+        
+        states = []
+        for row in self.state_rows:
+            line =  getattr(self.bt_state_container["data0"],row)
+            states.append(list(line.get(size=self.lookback,ago=0)))
+        
+        return np.array(states)

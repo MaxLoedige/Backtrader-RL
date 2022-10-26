@@ -3,35 +3,38 @@ from __future__ import (absolute_import, division, print_function,
 
 import backtrader as bt
 import pandas as pd
-from strategy import AgentStrategy
-from observers import actionObserver,minPeriodIndicator
-from datetime import datetime,timedelta
-from env import BTgym
-from tensorforce.environments import Environment
+from strategy import PositionBasedStrategy
+from utils import actionObserver,rewardObserver,cumRewardObserver
+from random import randint
+from engine import  BTEngine
+from .adapters.GymAdapter import GymAdapter
 
 df = pd.read_csv("backtraderRL/test_data/BNB_USDT_5m.csv",index_col=0)
 df["timestamp"] = pd.to_datetime(df["timestamp"])
 df = df.set_index("timestamp",drop=True)
 data = bt.feeds.PandasData(dataname=df)
 
-cerebro = BTgym(lookback = 10,only_close=False)
-cerebro.adddata(data)
-cerebro.addstrategy(AgentStrategy)
-cerebro.addobserver(actionObserver)
+engine = BTEngine(lookback = 40)
+engine.adddata(data)
+
+engine.addstrategy(PositionBasedStrategy)
+engine.addobserver(actionObserver)
+engine.addobserver(rewardObserver)
+engine.addobserver(cumRewardObserver)
+
+# engine.addobserver(bt.observers.BuySell)
+# engine.addobserver(bt.observers.Broker)
+# engine.addobserver(bt.observers.Trades)
 
 lookback = 10
 
-environment = Environment.create(environment='gym', level=cerebro ,max_episode_timesteps=len(df)-lookback)
-
-
-
-environment.reset()
+engine.reset()
 terminated = False
 
+rewards = []
+
 while not terminated:
-    observation, reward, terminated, truncated, info = environment.step()
+    observation, reward, terminated = engine.step(randint(0,2))
 
-print(len(df))
-
-environment.close()
-environment._environment.plot()
+engine.close()
+engine.plot()
