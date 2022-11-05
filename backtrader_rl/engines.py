@@ -103,7 +103,8 @@ class BTEngine(bt.Cerebro):
         observation = self._get_observations()
 
         for strat in self.runstrats_container:
-            reward = strat._computeReward()        
+            reward = strat._computeReward()
+        print(reward)    
 
         return observation, reward, self.terminated
   
